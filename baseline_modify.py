@@ -16,7 +16,7 @@ torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
 FEATURES = [
     "sex","handId","strengthId","spinId",
     "pointId","actionId","positionId","strikeId","scoreSelf","scoreOther","strikeNumber",
-    "gamePlayerId", "gamePlayerOtherId"]
+    "gamePlayerId", "gamePlayerOtherId", "prev_action", "prev_point"]
 PAD_TOKEN = 0
 
 class RallyDataset(Dataset):
@@ -57,8 +57,17 @@ class MultiTaskLSTM(nn.Module):
                             dropout=dropout if num_layers>1 else 0.0, bidirectional=False)
         self.drop = nn.Dropout(dropout)
         
-        self.act_head = nn.Linear(hidden, n_act)
-        self.pt_head  = nn.Linear(hidden, n_pt)
+        # 將原本單層的 Linear，改成兩層的 Sequential (MLP)
+        self.act_head = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, n_act)
+        )
+        self.pt_head  = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, n_pt)
+        )
         
         # 勝負預測 Attention
         self.attn = nn.Linear(hidden, 1)
@@ -90,6 +99,13 @@ def main(args):
     test  = pd.read_csv(args.test).sort_values(["rally_uid","strikeNumber"])
     train["strikeNumber"] = train["strikeNumber"].clip(0, 40)
     test["strikeNumber"]  = test["strikeNumber"].clip(0, 40)
+
+    # ---  新增這區塊：加入 Lag Features (上一拍的動作與落點)  ---
+    for df in [train, test]:
+        # 將資料依據小分 (rally) 分組，然後把 actionId 和 pointId 往下推一格
+        df["prev_action"] = df.groupby("rally_uid")["actionId"].shift(1).fillna(0)
+        df["prev_point"]  = df.groupby("rally_uid")["pointId"].shift(1).fillna(0)
+    # ---  新增結束  ---
 
     cats = {c: pd.Categorical(train[c]).categories for c in FEATURES}
     def encode_frame(df):
@@ -135,8 +151,8 @@ def main(args):
 
     act_counts = np.bincount(yA_tr[yA_tr!=-1].ravel(), minlength=n_act) + 1
     pt_counts  = np.bincount(yP_tr[yP_tr!=-1].ravel(), minlength=n_pt) + 1
-    act_w = torch.tensor(1.0/act_counts, dtype=torch.float32); act_w = (act_w * (n_act/act_w.sum()))
-    pt_w  = torch.tensor(1.0/pt_counts,  dtype=torch.float32); pt_w  = (pt_w  * (n_pt /pt_w.sum()))
+    act_w = torch.tensor(1.0/np.sqrt(act_counts), dtype=torch.float32); act_w = (act_w * (n_act/act_w.sum()))
+    pt_w  = torch.tensor(1.0/np.sqrt(pt_counts),  dtype=torch.float32); pt_w  = (pt_w  * (n_pt /pt_w.sum()))
 
     train_ds = RallyDataset(X_tr, yA_tr, yP_tr, yR_tr, L_tr, is_train=True)
     val_ds   = RallyDataset(X_va, yA_va, yP_va, yR_va, L_va, is_train=False)
@@ -149,7 +165,7 @@ def main(args):
     
     # 回歸穩定版的 CrossEntropyLoss
     ce_action = nn.CrossEntropyLoss(ignore_index=-1, weight=act_w.to(device))
-    ce_point  = nn.CrossEntropyLoss(ignore_index=-1, weight=pt_w.to(device))
+    ce_point  = nn.CrossEntropyLoss(ignore_index=-1)
     bce_rally = nn.BCEWithLogitsLoss()
     
     # 加入輕微的 weight_decay 防止過擬合
