@@ -7,7 +7,7 @@ python .\baseline_code.py --epochs 10
 ```
 - baseline_modify.py
 ```shell
-python .\baseline_modify.py --epochs 20
+python .\baseline_modify.py --epochs 30 --emb 32 --layers 2 --out "output/baseline_modify_2.csv"
 ```
 
 ### 檔案結構
