@@ -16,7 +16,11 @@ torch.manual_seed(SEED); torch.cuda.manual_seed_all(SEED)
 FEATURES = [
     "sex","handId","strengthId","spinId",
     "pointId","actionId","positionId","strikeId","scoreSelf","scoreOther","strikeNumber",
-    "gamePlayerId", "gamePlayerOtherId", "prev_action", "prev_point"]
+    "gamePlayerId", "gamePlayerOtherId",
+    "score_diff", "pos_act",
+    "prev_action", "prev_point", "prev_pos",
+    "prev2_action", "prev2_point", "prev2_pos",
+]
 PAD_TOKEN = 0
 
 class RallyDataset(Dataset):
@@ -100,12 +104,31 @@ def main(args):
     train["strikeNumber"] = train["strikeNumber"].clip(0, 40)
     test["strikeNumber"]  = test["strikeNumber"].clip(0, 40)
 
-    # ---  新增這區塊：加入 Lag Features (上一拍的動作與落點)  ---
-    for df in [train, test]:
-        # 將資料依據小分 (rally) 分組，然後把 actionId 和 pointId 往下推一格
-        df["prev_action"] = df.groupby("rally_uid")["actionId"].shift(1).fillna(0)
-        df["prev_point"]  = df.groupby("rally_uid")["pointId"].shift(1).fillna(0)
-    # ---  新增結束  ---
+    # ==========================================
+    # 🌟 特徵工程區塊 (Feature Engineering) 🌟
+    # ==========================================
+    def create_features(df):
+        # 1. 局勢特徵：分差
+        df["score_diff"] = df["scoreSelf"] - df["scoreOther"]
+        
+        # 2. 組合特徵：站位 + 動作 + 強度
+        df["pos_act"] = df["positionId"].astype(str) + "_" + df["actionId"].astype(str)
+        
+        # 3. 歷史平移特徵 (上一拍, t-1)
+        df["prev_action"] = df.groupby("rally_uid")["actionId"].shift(1).fillna(0).astype(int)
+        df["prev_point"]  = df.groupby("rally_uid")["pointId"].shift(1).fillna(0).astype(int)
+        df["prev_pos"]    = df.groupby("rally_uid")["positionId"].shift(1).fillna(0).astype(int)
+        
+        # 4. 歷史平移特徵 (上上拍, t-2)
+        df["prev2_action"] = df.groupby("rally_uid")["actionId"].shift(2).fillna(0).astype(int)
+        df["prev2_point"]  = df.groupby("rally_uid")["pointId"].shift(2).fillna(0).astype(int)
+        df["prev2_pos"]    = df.groupby("rally_uid")["positionId"].shift(2).fillna(0).astype(int)
+        
+        return df
+
+    train = create_features(train)
+    test  = create_features(test)
+    # ==========================================
 
     cats = {c: pd.Categorical(train[c]).categories for c in FEATURES}
     def encode_frame(df):
